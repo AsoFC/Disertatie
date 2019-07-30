@@ -2,16 +2,16 @@ import sys
 import random
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score
-from statistics import mode, mean, stdev
+from statistics import mode, mean, stdev, variance
 from sklearn.utils import resample
 from sklearn.model_selection import KFold
-from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import accuracy_score
-from extra_tree import ExtraTreeForrest
+from regression_forest_non_oblique import ExtraTreeRegressionForrest
 from extra_diff_ev import ExtraDiffObliqueForrest
 from time import time
+from sklearn.metrics import mean_squared_error, r2_score
 import sklearn.preprocessing as preprocessing
 
 from joblib import Parallel, delayed
@@ -20,7 +20,7 @@ import multiprocessing
 
 
 
-class ExtraObliqueForrest:
+class ExtraObliqueRegressionForrest:
     
     """
     alg_type = classification or regression, classification supported rn
@@ -30,10 +30,11 @@ class ExtraObliqueForrest:
     """        
     def __init__(self, alg_type, M, n_min, K):
         self.used_combos = []
-        self.alg_type = alg_type
+        self.alg_type = 'regression'
         self.M = M
         self.n_min = n_min
         self.K = K
+        self.f = random.uniform(0, 2)
         self.entropy_beta = np.random.randint(2, 11)
     
     def fit(self, S, y=None):
@@ -124,24 +125,78 @@ class ExtraObliqueForrest:
     """
     returns a random value between the maximum and the minimum values of the attributes
     """
-    def pick_a_random_split(self, S, a):
+    
+    def pick_a_random_split(self, S, a, trials=5):
         mu, sigma = 0, 0.1 # mean and standard deviation
-        beta = np.random.normal(mu, sigma, len(a))
-        sm = []
-        # mat = to_matrix(S)
-        for k in range(len(S['output'])):
-            cm = sum([S[key][k] * b for key, b in zip(a, beta)])
-            sm.append(cm)
-        cm_max = max(sm)
-        cm_min = min(sm)
-        if cm_max == cm_min:
-            cm = cm_max
-        else:
-            cm = random.uniform(cm_min, cm_max)
-        return a, beta, cm, sm
+        cr = 0.002
+        cr = 0.002
+        population = [(np.random.normal(mu, sigma, len(a)), 0) for _ in range(trials)]
         
-    def beta_entropy(self, target, beta):
-        # beta = self.entropy_beta
+        for _ in range(trials):
+            new_population = []
+            for beta, old_cms in population:
+                sm = []
+                new_sm = []
+                xa = np.random.normal(mu, sigma, len(a))
+                xb = np.random.normal(mu, sigma, len(a))
+                xc = np.random.normal(mu, sigma, len(a))
+                mutated_beta = self.f * (xa - xb) + xc
+                new_beta = []
+                for elem_old, elem_new in zip(beta, new_beta):
+                    r = random.random()
+                    if r <= cr:
+                        new_beta.append(elem_new)
+                    else:
+                        new_beta.append(elem_old)
+                    
+                sm = []
+                for k in range(len(S['output'])):
+                    cm = sum([S[key][k] * b for key, b in zip(a, beta)])
+                    sm.append(cm)
+                cm_max = max(sm)
+                cm_min = min(sm)
+                if cm_max == cm_min:
+                    cm = cm_max
+                else:
+                    cm = random.uniform(cm_min, cm_max)
+                    
+                new_sm = []
+                for k in range(len(S['output'])):
+                    cm = sum([S[key][k] * b for key, b in zip(a, new_beta)])
+                    new_sm.append(cm)
+                cm_max = max(new_sm)
+                cm_min = min(new_sm)
+                if cm_max == cm_min:
+                    new_cm = cm_max
+                else:
+                    new_cm = random.uniform(cm_min, cm_max)
+                if self.score(S, beta, a, cm, sm) > self.score(S, new_beta, a, new_cm, new_sm):    
+                    new_population.append((new_beta, new_cm))
+                else:
+                    new_population.append((beta, cm))
+            population = new_population
+        result = []
+        for beta, old_cm in population:
+            sm = []
+            for k in range(len(S['output'])):
+                cm = sum([S[key][k] * b for key, b in zip(a, beta)])
+                sm.append(cm)
+            cm_max = max(sm)
+            cm_min = min(sm)
+            if old_cm == 0:
+                if cm_max == cm_min:
+                    cm = cm_max
+                else:
+                    cm = random.uniform(cm_min, cm_max)
+            else:
+                cm = old_cm
+            result.append([a, beta, cm, sm])
+        scores = [self.score(S, betai, ai, cm, sm) for ai, betai, cm, sm in result]
+        local_s_star = scores.index(min(scores))
+        return result[local_s_star]
+        
+    def beta_entropy(self, target):
+        beta = self.entropy_beta
         classes = set(target)
         lengths = [target.count(t) for t in classes]
         s = len(target)
@@ -153,7 +208,7 @@ class ExtraObliqueForrest:
     """
     purity gain
     """
-    def score(self, S, si, ai, cm, sm, beta):
+    def score1(self, S, si, ai, cm, sm, beta):
         #entropy
         hbs = self.beta_entropy(list(S['output']), beta)
         #split entropy
@@ -177,20 +232,27 @@ class ExtraObliqueForrest:
         return etpl + etpr
         
         
-    def score1(self, S, si, ai, cm, sm, beta=0):
+    def score(self, S, si, ai, cm, sm, beta=0):
         #different for regression
         #entropy
-        etp = self.entropy(list(S['output']))
+        etp = variance(list(S['output']))
         #split entropy
         left = [t for s, t in zip(sm, S['output']) if s < cm]
         right = [t for s, t in zip(sm, S['output']) if s > cm]
-        etpl = self.entropy(left)
-        etpr = self.entropy(right)
+        if len(left) < 2:
+            etpl = 0
+        else:
+            etpl = variance(left)
+        if len(right) < 2:
+            etpr = 0
+        else:
+            etpr = variance(right)
         split_etp = float(len(left))/len(S[ai[0]]) * etpl + float(len(right)) / len(S[ai[0]]) * etpr
         #information gain
         ig = etp - split_etp
-        return 2 * ig / (etp + split_etp)
-        return 2 * ig / (etp + split_etp)
+        # ig = (etp - split_etp) / etp
+        # return 2 * ig / (etp + split_etp)
+        ig = etpl + etpr
         return ig
 
 
@@ -296,8 +358,8 @@ class ExtraObliqueForrest:
         if self.alg_type == 'classification':
             leaf = self.class_frequencies(S)
             return leaf
-        if self.alg_type == 'classification':
-            leaf = avg(S['output'])
+        if self.alg_type == 'regression':
+            leaf = mean(S['output'])
             return leaf  
         
     def predict(self, S):
@@ -320,17 +382,11 @@ class ExtraObliqueForrest:
                 outputs.append(output)
         # print(outputs)
         # return mode(outputs)
-        return round(mean(outputs))
+        return mean(outputs)
         
     def get_verdict(self, tree, S):
-        if isinstance(tree, (list,)) and isinstance(tree[0], (tuple,)):
-            max = 0
-            output = None
-            for tp in tree:
-                if tp[1] > max:
-                    max = tp[1]
-                    output = tp[0]
-            return output
+        if isinstance(tree, (float,)):
+            return tree
             
         root = list(tree.keys())[0]
         import re
@@ -462,25 +518,23 @@ def get_income():
     return df
     
     
-def resample_df(df, type):
-    df_one = df[df.output==1]
-    df_two = df[df.output==0]
-    no_train_samples = min([len(df_one), len(df_two)])
-    df_one = resample(df_one, replace=True, n_samples=no_train_samples, random_state=123)
-    df_two = resample(df_two, replace=True, n_samples=no_train_samples, random_state=123)
+def resample_df(df, no_train_samples = 2000):
+    # df_one = df[df.output==1]
+    # df_two = df[df.output==0]
+
+    # df_one = resample(df_one, replace=True, n_samples=no_train_samples, random_state=123)
+    # df_two = resample(df_two, replace=True, n_samples=no_train_samples, random_state=123)
      
-    df = pd.concat([df_one, df_two])
+    # df = pd.concat([df_one, df_two])
     df = df.sample(frac=1)
-    print(df.output.value_counts())
+    # print(df.output.value_counts())
 
     df = df.fillna(df.mean())
     y = df.output
     x = df.drop("output", axis=1)
     x = x.fillna(x.mean())
     y = y.fillna(y.mean())
-    if type == 'ens':
-        return df, y
-    return x, y
+    return x, y, df
     
     
 def get_fam():         
@@ -496,40 +550,37 @@ def get_fam():
          'gender': 1} 
     return S, inst
     
-def cv(name, ens, data, type='ens', splits=10):
+def cv(name, ens, df, y, splits=10):
     kf = KFold(n_splits=splits)
     t = time()
     y_true, y_pred = [], []
-    for train_index, test_index in kf.split(data):
-        df_train, df_test = data.iloc[train_index].fillna(0), data.iloc[test_index].fillna(0)
-        y_train, y_test = df_train['output'].fillna(0), df_test['output'].fillna(0)
+    for train_index, test_index in kf.split(df):
+        X_train, X_test = df.iloc[train_index].fillna(0), df.iloc[test_index].fillna(0)
+        y_train, y_test = y[train_index].fillna(0), y[test_index].fillna(0)
         y_true.extend(y_test)
         
-        X_train, y_train = resample_df(df_train, type)
         trees = ens.fit(X_train, y_train)
-        if type == 'sk':
-            df_test = df_test.drop('output', axis=1)
-        y_pred.extend(ens.predict(df_test))
+        # open("reg.txt", 'w').write(str(ens.trees))
+        y_pred.extend(ens.predict(X_test))
         # print("bye")
         break
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred)
+    acc = mean_squared_error(y_true, y_pred)
     print(name, acc, time() - t)
-    print(name, f1, time() - t)
-    return acc, f1
+    return acc
 
 
 if __name__ == "__main__":
     sys.setrecursionlimit(3000)
-    ens = ExtraObliqueForrest('classification', 2, 2, 2)
+    ens = ExtraObliqueRegressionForrest('classification', 2, 2, 2)
+    samples = 100
     # seed = 5
     # random.seed(seed)
-    init_df, samples = get_income(), 10000
+    # init_df, samples = get_income(), 10000
     # x, y, df = resample_df(init_df, samples)
     # ents = ens.get_entropies(df)
     # ents.sort(reverse=True)
     # print("income", ents)
-    init_df , samples= get_poverty(), 3500
+    # init_df , samples= get_poverty(), 3500
     # x, y, df = resample_df(init_df, samples)
     # ents = ens.get_entropies(df)
     # ents.sort(reverse=True)
@@ -539,7 +590,7 @@ if __name__ == "__main__":
     # ents = ens.get_entropies(df)
     # ents.sort(reverse=True)
     # print("diabetes", ents)
-    init_df, samples = get_titanic(), 340
+    # init_df, samples = get_titanic(), 340
     # x, y, df = resample_df(init_df, samples)
     # ents = ens.get_entropies(df)
     # ents.sort(reverse=True)
@@ -567,59 +618,67 @@ if __name__ == "__main__":
     # estimators = 11
     # min_samples_per_leaf = 20
     # max_no_features = 10
+    from sklearn.datasets import load_boston, load_diabetes, fetch_california_housing
+    boston_dataset = load_boston()
+    init_df = pd.DataFrame(boston_dataset.data, columns=boston_dataset.feature_names)
+    init_df['output'] = boston_dataset.target
+    # print(init_df.head())
+    diabetes_dataset = load_diabetes()
+    init_df = pd.DataFrame(diabetes_dataset.data, columns=diabetes_dataset.feature_names)
+    init_df['output'] = diabetes_dataset.target
+    
+    boston_dataset = fetch_california_housing()
+    # init_df = pd.DataFrame(boston_dataset.data, columns=boston_dataset.feature_names)
+    # init_df['output'] = boston_dataset.target
+    # init_df = init_df.sample(1000)
+    
+    # print(init_df.count)
+    
     
     estimators = 10
     min_samples_per_leaf = 5
     max_no_features = 2
     
-    runs = 20
+    runs = 10
     
     for _ in range(runs):
         # norm
-        df = init_df
-        data=((df-df.min())/(df.max()-df.min()))
-        data["output"]=df["output"]
-        # x, y, df = resample_df(data, samples)
+        data = init_df
+        # data=((df-df.min())/(df.max()-df.min()))
+        # data["output"]=df["output"]
+        x, y, df = resample_df(data, samples)
         
         
-        ens = ExtraObliqueForrest('classification', estimators, min_samples_per_leaf, max_no_features)
-        acc_eof.append(cv('eof', ens, data))
-        
-        t = time()
-        
-        # ens = ExtraDiffObliqueForrest('classification', estimators, min_samples_per_leaf, max_no_features)
-        acc_edof.append(cv('edof', ens, data))
-        
+        ens = ExtraObliqueRegressionForrest('classification', estimators, min_samples_per_leaf, max_no_features)
+        acc_eof.append(cv('eof', ens, df, y))
         
         t = time()
-        ens = ExtraTreeForrest('classification', estimators, min_samples_per_leaf, max_no_features*3)
-        acc_etf.append(cv('etf', ens, data))    
         
-        ens = ExtraTreesClassifier(
-        criterion="entropy",
+        ens = ExtraDiffObliqueForrest('classification', estimators, min_samples_per_leaf, max_no_features)
+        # acc_edof.append(cv('edof', ens, df, y))
+        
+        
+        t = time()
+        ens = ExtraTreeRegressionForrest('classification', estimators, min_samples_per_leaf, max_no_features*3)
+        # acc_etf.append(cv('etf', ens, df, y))    
+        
+        ens = ExtraTreesRegressor(
+        criterion="mse",
         n_estimators=estimators, min_samples_leaf=min_samples_per_leaf, 
                                       max_features=max_no_features * 3)
-        acc_sketf.append(cv('sketf', ens, data, type='sk'))
+        # acc_sketf.append(cv('sketf', ens, x, y))
         
-        ens = RandomForestClassifier(
-        criterion="entropy",
+        ens = RandomForestRegressor(
+        criterion="mse",
         n_estimators=estimators, min_samples_leaf=min_samples_per_leaf, 
                                       max_features=max_no_features * 3)
                                      
-        acc_skerf.append(cv('skerf', ens, data, type='sk'))
-    
-    f = open("accs.txt", "a")
-    print("\nACC_FINAL:")
-    print('edof', mean(acc_edof[:][0]), stdev(acc_edof[:][0]))
-    print('eof', mean(acc_eof[:][0]), stdev(acc_eof[:][0]))
-    print('etf', mean(acc_etf[:][0]), stdev(acc_etf[:][0]))
-    print('sketf', mean(acc_sketf[:][0]), stdev(acc_sketf[:][0]))
-    print('skerf', mean(acc_skerf[:][0]), stdev(acc_skerf[:][0]))
-    
-    print("\nF1_FINAL:")
-    print('edof', mean(acc_edof[:][1]), stdev(acc_edof[:][1]))
-    print('eof', mean(acc_eof[:][1]), stdev(acc_eof[:][1]))
-    print('etf', mean(acc_etf[:][1]), stdev(acc_etf[:][1]))
-    print('sketf', mean(acc_sketf[:][1]), stdev(acc_sketf[:][1]))
-    print('skerf', mean(acc_skerf[:][1]), stdev(acc_skerf[:][1]))
+        # acc_skerf.append(cv('skerf', ens, x, y))
+        
+    print("\nFINAL:")
+    # print('edof', mean(acc_edof), stdev(acc_edof) )
+    print('eof', mean(acc_eof), stdev(acc_eof))
+    # print('etf', mean(acc_etf), stdev(acc_etf))
+    # print('sketf', mean(acc_sketf), stdev(acc_sketf))
+    # print('skerf', mean(acc_skerf), stdev(acc_skerf))
             

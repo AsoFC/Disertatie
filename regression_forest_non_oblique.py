@@ -1,16 +1,17 @@
 import random
 import numpy as np
 import pandas as pd
-from statistics import mode, mean
+from sklearn.metrics import mean_squared_error, r2_score
+from statistics import mode, mean, variance, stdev
 
 from joblib import Parallel, delayed
 import multiprocessing
 
-class ExtraTreeForrest:
+class ExtraTreeRegressionForrest:
 
     def __init__(self, alg_type, M, n_min, K):
         self.used_combos = []
-        self.alg_type = alg_type
+        self.alg_type = 'regression'
         self.M = M
         self.n_min = n_min
         self.K = K
@@ -78,10 +79,34 @@ class ExtraTreeForrest:
         ig = hbs - split_etp
         return 2 * ig / (hbs + split_etp)
         
+         
+    def score(self, S, si, ai, beta=0):
+        #different for regression
+        #entropy
+        etp = variance(list(S['output']))
+        #split entropy
+        left = [t for a, t in zip(S[ai], S['output']) if a < si]
+        right = [t for a, t in zip(S[ai], S['output']) if a > si]
+        if len(left) < 2:
+            etpl = 0
+        else:
+            etpl = variance(left)
+        if len(right) < 2:
+            etpr = 0
+        else:
+            etpr = variance(right)
+        split_etp = float(len(left))/len(S[ai]) * etpl + float(len(right)) / len(S[ai]) * etpr
+        #information gain
+        ig = etp - split_etp
+        ig = etpl + etpr
+        # ig = (etp - split_etp) / etp
+        # return 2 * ig / (etp + split_etp)
+        return ig
+        
     """
     normalized version of the shannon information gain
     """
-    def score(self, S, si, ai, beta=0):
+    def score3(self, S, si, ai, beta=0):
         #different for regression
         #entropy
         etp = self.entropy(list(S['output']))
@@ -228,8 +253,8 @@ class ExtraTreeForrest:
         if self.alg_type == 'classification':
             leaf = self.class_frequencies(S)
             return leaf
-        if self.alg_type == 'classification':
-            leaf = avg(S['output'])
+        if self.alg_type == 'regression':
+            leaf = mean(S['output'])
             return leaf
         
     """
@@ -258,7 +283,7 @@ class ExtraTreeForrest:
             if output is not None:
                 outputs.append(output)
         # print(outputs)
-        return round(mean(outputs))
+        return mean(outputs)
         
     def to_matrix(self, S):
         mat = []
@@ -284,14 +309,10 @@ class ExtraTreeForrest:
         return verdicts
         
     def get_verdict(self, tree, S):
-        if isinstance(tree, (list,)) and isinstance(tree[0], (tuple,)):
-            max = 0
-            output = None
-            for tp in tree:
-                if tp[1] > max:
-                    max = tp[1]
-                    output = tp[0]
-            return output
+        
+        if isinstance(tree, (float,)):
+            return tree
+            return tree
         root = list(tree.keys())[0]
         (root_attr, root_cut) = root
         if S[root_attr] < root_cut:

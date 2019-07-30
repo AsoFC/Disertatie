@@ -1,7 +1,7 @@
 import random
 import numpy as np
 import pandas as pd
-from statistics import mode 
+from statistics import mode, mean
 from sklearn.utils import resample
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.metrics import accuracy_score
@@ -34,6 +34,7 @@ class ExtraDiffObliqueForrest:
     
     def fit(self, S, y=None):
         self.build_an_extra_tree_ensemble(S)
+        open("edof_trees.txt",'w').write(str(self.trees))
     
     """
     S = dictionary of train data of the form: {header_value: data_list}
@@ -116,63 +117,74 @@ class ExtraDiffObliqueForrest:
     """
     returns a random value between the maximum and the minimum values of the attributes
     """
-    def pick_a_random_split(self, S, a, trials=10):
+    def pick_a_random_split(self, S, a, trials=5):
         mu, sigma = 0, 0.1 # mean and standard deviation
-        population = [np.random.normal(mu, sigma, len(a)) for _ in range(trials)]
+        cr = 0.002
+        cr = 0.002
+        population = [(np.random.normal(mu, sigma, len(a)), 0) for _ in range(trials)]
         
         for _ in range(trials):
             new_population = []
-            min_score = 10000
-            min_beta = population[0]
-            for beta in population:
+            for beta, old_cms in population:
                 sm = []
                 new_sm = []
                 xa = np.random.normal(mu, sigma, len(a))
                 xb = np.random.normal(mu, sigma, len(a))
                 xc = np.random.normal(mu, sigma, len(a))
-                new_beta = self.f * (xa - xb) + xc
+                mutated_beta = self.f * (xa - xb) + xc
+                new_beta = []
+                for elem_old, elem_new in zip(beta, new_beta):
+                    r = random.random()
+                    if r <= cr:
+                        new_beta.append(elem_new)
+                    else:
+                        new_beta.append(elem_old)
+                    
+                sm = []
                 for k in range(len(S['output'])):
                     cm = sum([S[key][k] * b for key, b in zip(a, beta)])
                     sm.append(cm)
-                    cm = sum([S[key][k] * b for key, b in zip(a, beta)])
-                    new_sm.append(cm)
                 cm_max = max(sm)
                 cm_min = min(sm)
-                new_cm_max = max(new_sm)
-                new_cm_min = min(new_sm)
                 if cm_max == cm_min:
                     cm = cm_max
                 else:
                     cm = random.uniform(cm_min, cm_max)
-                if new_cm_max == new_cm_min:
-                    new_cm = new_cm_max
+                    
+                new_sm = []
+                for k in range(len(S['output'])):
+                    cm = sum([S[key][k] * b for key, b in zip(a, new_beta)])
+                    new_sm.append(cm)
+                cm_max = max(new_sm)
+                cm_min = min(new_sm)
+                if cm_max == cm_min:
+                    new_cm = cm_max
                 else:
-                    new_cm = random.uniform(new_cm_min, new_cm_max)
-                beta_score = self.score(S, sm, a, cm, sm)
-                new_beta_score = self.score(S, sm, a, new_cm, new_sm)
-                if beta_score > new_beta_score:
-                    new_population.append(new_beta)
-                    if new_beta_score < min_score:
-                        min_beta = new_beta
-                        min_score = new_beta_score
+                    new_cm = random.uniform(cm_min, cm_max)
+                if self.score(S, beta, a, cm, sm) > self.score(S, new_beta, a, new_cm, new_sm):    
+                    new_population.append((new_beta, new_cm))
                 else:
-                    if beta_score < min_score:
-                        min_beta = beta
-                        min_score = beta_score
-                    new_population.append(beta)
+                    new_population.append((beta, cm))
             population = new_population
-        
-        sm = []
-        for k in range(len(S['output'])):
-            cm = sum([S[key][k] * b for key, b in zip(a, min_beta)])
-            sm.append(cm)
-        cm_max = max(sm)
-        cm_min = min(sm)
-        if cm_max == cm_min:
-            cm = cm_max
-        else:
-            cm = random.uniform(cm_min, cm_max)
-        return a, min_beta, cm, sm
+        result = []
+        for beta, old_cm in population:
+            sm = []
+            for k in range(len(S['output'])):
+                cm = sum([S[key][k] * b for key, b in zip(a, beta)])
+                sm.append(cm)
+            cm_max = max(sm)
+            cm_min = min(sm)
+            if old_cm == 0:
+                if cm_max == cm_min:
+                    cm = cm_max
+                else:
+                    cm = random.uniform(cm_min, cm_max)
+            else:
+                cm = old_cm
+            result.append([a, beta, cm, sm])
+        scores = [self.score(S, betai, ai, cm, sm) for ai, betai, cm, sm in result]
+        local_s_star = scores.index(min(scores))
+        return result[local_s_star]
     
     def beta_entropy(self, target, beta):
         classes = set(target)
@@ -338,7 +350,7 @@ class ExtraDiffObliqueForrest:
             if output is not None:
                 outputs.append(output)
         # print(outputs)
-        return mode(outputs)
+        return round(mean(outputs))
         
     def get_verdict(self, tree, S):
         if isinstance(tree, (list,)) and isinstance(tree[0], (tuple,)):
